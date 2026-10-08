@@ -1,0 +1,150 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BizOps Console</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>BizOps Console</h1>
+<nav id="nav" class="hidden"><button data-t="dash">Analytics</button><button data-t="tix">Tickets</button><button data-t="agents">Agents</button><button data-t="kb">Knowledge base</button><button data-t="set">Settings</button></nav>
+<a href="/" style="margin-left:auto;color:var(--accent)">Requester portal</a></header>
+<main>
+<section id="login" class="card hidden" style="max-width:360px;margin:40px auto"><h2>Team login</h2>
+<form id="loginForm"><label>Password</label><input type="password" name="password" required><p><button class="primary">Sign in</button> <span id="lerr" class="err"></span></p></form></section>
+<section id="dash" class="hidden"></section>
+<section id="tix" class="hidden"></section>
+<section id="agents" class="hidden"></section>
+<section id="kb" class="hidden"></section>
+<section id="set" class="hidden"></section>
+</main>
+<script type="module">
+import { $, esc, fmt, hrs, api, options, tabs } from '/common.js';
+const panels = [...document.querySelectorAll('main > section')];
+let meta, agents = [];
+const loaders = { dash: dashboard, tix: tickets, agents: agentsView, kb: kbView, set: settings };
+const show = tabs($('#nav'), panels, (id) => loaders[id]?.());
+
+async function start() {
+  const s = await api('/api/session');
+  if (!s.admin) { $('#login').classList.remove('hidden'); $('#nav').classList.add('hidden'); return; }
+  $('#login').classList.add('hidden'); $('#nav').classList.remove('hidden');
+  meta = await api('/api/meta'); agents = await api('/api/admin/agents');
+  show('dash');
+}
+$('#loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try { await api('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); start(); }
+  catch (err) { $('#lerr').textContent = err.message; }
+};
+
+const bar = (v, max, label) => `<div class="barwrap" title="${esc(label)}"><div class="bar" style="width:${max ? (v / max) * 100 : 0}%"></div></div>`;
+const sla = (v) => (v == null ? '–' : `<span class="pill ${v >= 90 ? 'ok' : v >= 70 ? 'warn' : 'bad'}">${v}%</span>`);
+
+async function dashboard(days = 30) {
+  const a = await api(`/api/admin/analytics?days=${days}`), o = a.overview, el = $('#dash');
+  const maxT = Math.max(1, ...a.trend.flatMap((d) => [d.created, d.resolved]));
+  const w = 700, h = 140, step = w / a.trend.length;
+  const pts = (k) => a.trend.map((d, i) => `${(i * step + step / 2).toFixed(1)},${(h - 14 - (d[k] / maxT) * (h - 30)).toFixed(1)}`).join(' ');
+  const table = (title, rows, label) => `<div class="card"><h2>${title}</h2><table><tr><th>${label}</th><th>Tickets</th><th>Resolved</th><th>Open</th><th>Avg TAT</th><th>SLA met</th><th></th></tr>
+    ${rows.filter((r) => r.created).map((r) => `<tr><td>${esc(r.name ?? r.key)}</td><td>${r.created}</td><td>${r.resolved}</td><td>${r.open}${r.overdue ? ` <span class="pill bad">${r.overdue} overdue</span>` : ''}</td><td>${hrs(r.avg_tat_hours)}</td><td>${sla(r.sla_met_pct)}</td><td style="width:20%">${bar(r.created, Math.max(...rows.map((x) => x.created)), r.created)}</td></tr>`).join('') || '<tr><td colspan="7" class="hint">No tickets in this period.</td></tr>'}</table></div>`;
+  el.innerHTML = `<p>Period: <select id="days" style="width:auto">${[7, 30, 90, 365].map((d) => `<option value="${d}" ${d === days ? 'selected' : ''}>Last ${d} days</option>`).join('')}</select></p>
+  <div class="kpis">
+    <div class="kpi"><b>${o.created}</b><span>Tickets received</span></div>
+    <div class="kpi"><b>${o.resolved}</b><span>Resolved</span></div>
+    <div class="kpi"><b>${o.open}</b><span>Open (${o.overdue} overdue${a.unassigned ? `, ${a.unassigned} unassigned` : ''})</span></div>
+    <div class="kpi"><b>${hrs(o.avg_tat_hours)}</b><span>Avg turnaround (median ${hrs(o.median_tat_hours)})</span></div>
+    <div class="kpi"><b>${hrs(o.avg_first_response_hours)}</b><span>Avg first response</span></div>
+    <div class="kpi"><b>${o.sla_met_pct ?? '–'}${o.sla_met_pct != null ? '%' : ''}</b><span>Resolved within SLA</span></div></div>
+  <div class="card"><h2>Created vs resolved per day</h2><svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="Daily created and resolved tickets">
+    <polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${pts('created')}"/><polyline fill="none" stroke="var(--ok)" stroke-width="2" points="${pts('resolved')}"/>
+    <text x="4" y="12">peak ${maxT}/day</text><text x="${w - 150}" y="12" style="fill:var(--accent)">● created</text><text x="${w - 80}" y="12" style="fill:var(--ok)">● resolved</text>
+    <text x="4" y="${h - 2}">${a.trend[0].date}</text><text x="${w - 60}" y="${h - 2}">${a.trend.at(-1).date}</text></svg></div>
+  ${table('Agent performance', a.by_agent, 'Agent')}${table('Request types', a.by_category, 'Category')}${table('Requesting teams', a.by_team, 'Team')}${table('Priority', a.by_priority, 'Priority')}
+  <div class="card"><h2>Prerequisites bot</h2><p>${a.bot.questions} questions · ${a.bot.answered} answered from the knowledge base · 👍 ${a.bot.helpful} / 👎 ${a.bot.not_helpful}</p>
+  <b>Questions the bot could not answer (add these to the knowledge base)</b>
+  <table>${a.bot.top_unanswered.map((u) => `<tr><td>${esc(u.question)}</td><td>${u.count}×</td></tr>`).join('') || '<tr><td class="hint">None 🎉</td></tr>'}</table></div>`;
+  $('#days').onchange = (e) => dashboard(Number(e.target.value));
+}
+
+async function tickets(filters = { status: 'active' }) {
+  const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => v)).toString();
+  const list = await api(`/api/admin/tickets?${qs}`);
+  $('#tix').innerHTML = `<div class="card"><div class="row">
+    <div><label>Status</label><select id="fs"><option value="active">Active</option><option value="">All</option>${options(meta.statuses)}</select></div>
+    <div><label>Agent</label><select id="fa"><option value="">All</option><option value="unassigned">Unassigned</option>${agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
+    <div><label>Category</label><select id="fc"><option value="">All</option>${options(meta.categories)}</select></div>
+    <div><label>Search</label><input id="fq" value="${esc(filters.q || '')}"></div></div></div>
+    <div class="card" style="overflow:auto"><table><tr><th>Code</th><th>Title</th><th>Requester</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>Due</th></tr>
+    ${list.map((t) => `<tr class="click" data-id="${t.id}"><td>${t.code}</td><td>${esc(t.title)}</td><td>${esc(t.requester_name)}<br><span class="hint">${esc(t.team)}</span></td><td>${esc(t.category)}</td><td><span class="pill ${t.priority}">${t.priority}</span></td><td>${t.status.replace('_', ' ')}</td><td>${esc(t.agent_name || '–')}</td><td>${fmt(t.due_at)}${t.sla_breached ? ' <span class="pill bad">late</span>' : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="hint">No tickets match.</td></tr>'}</table></div><div id="detail"></div>`;
+  $('#fs').value = filters.status ?? ''; $('#fa').value = filters.agent_id || ''; $('#fc').value = filters.category || '';
+  const refilter = () => tickets({ status: $('#fs').value, agent_id: $('#fa').value, category: $('#fc').value, q: $('#fq').value });
+  ['fs', 'fa', 'fc'].forEach((id) => ($('#' + id).onchange = refilter));
+  $('#fq').onchange = refilter;
+  $('#tix').querySelectorAll('tr.click').forEach((r) => (r.onclick = () => ticketDetail(Number(r.dataset.id), refilter)));
+}
+
+async function ticketDetail(id, back) {
+  const t = await api(`/api/admin/tickets/${id}`), d = $('#detail');
+  d.innerHTML = `<div class="card"><h2>${t.code} · ${esc(t.title)}</h2>
+    <p class="hint">${esc(t.requester_name)} &lt;${esc(t.requester_email)}&gt; · ${esc(t.team)} · created ${fmt(t.created_at)} · due ${fmt(t.due_at)}${t.resolved_at ? ` · resolved ${fmt(t.resolved_at)}` : ''}</p>
+    <p style="white-space:pre-wrap">${esc(t.description) || '<i>No description</i>'}</p>
+    <div class="row"><div><label>Status</label><select id="ds">${options(meta.statuses, t.status)}</select></div>
+    <div><label>Assigned to</label><select id="da"><option value="">Unassigned</option>${agents.map((a) => `<option value="${a.id}" ${a.id === t.agent_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+    <div><label>Priority</label><select id="dp">${options(meta.priorities, t.priority)}</select></div>
+    <div><label>Type</label><select id="dc">${options(meta.categories, t.category)}</select></div></div>
+    <label>Resolution note (visible to requester)</label><textarea id="dr">${esc(t.resolution_note || '')}</textarea>
+    <p><button class="primary" id="save">Save changes</button> <span id="dmsg" class="hint"></span></p>
+    <h2>Conversation</h2>${t.comments.map((c) => `<div class="cm ${c.internal ? 'internal' : ''}"><b>${esc(c.author)}</b> ${c.internal ? '<span class="pill warn">internal</span>' : ''} <span class="hint">${fmt(c.created_at)}</span><br>${esc(c.body)}</div>`).join('') || '<p class="hint">No comments yet.</p>'}
+    <div class="row"><div><label>Author</label><select id="cauth">${agents.map((a) => `<option>${esc(a.name)}</option>`).join('')}</select></div>
+    <div><label>Visibility</label><select id="cint"><option value="0">Reply to requester</option><option value="1">Internal note</option></select></div></div>
+    <textarea id="cbody" placeholder="Write a comment…"></textarea><p><button class="sec" id="addc">Add comment</button></p></div>`;
+  d.scrollIntoView({ behavior: 'smooth' });
+  $('#save').onclick = async () => {
+    try {
+      await api(`/api/admin/tickets/${id}`, { method: 'PATCH', body: { status: $('#ds').value, agent_id: $('#da').value ? Number($('#da').value) : null, priority: $('#dp').value, category: $('#dc').value, resolution_note: $('#dr').value } });
+      back();
+    } catch (e) { $('#dmsg').textContent = e.message; }
+  };
+  $('#addc').onclick = async () => {
+    try { await api(`/api/admin/tickets/${id}/comments`, { method: 'POST', body: { author: $('#cauth').value, body: $('#cbody').value, internal: $('#cint').value === '1' } }); ticketDetail(id, back); }
+    catch (e) { $('#dmsg').textContent = e.message; }
+  };
+}
+
+async function agentsView() {
+  agents = await api('/api/admin/agents');
+  $('#agents').innerHTML = `<div class="card"><h2>Agents</h2><p class="hint">New tickets go to the active agent with the fewest open tickets whose skills match the request type (no skills = takes anything).</p>
+    <table><tr><th>Name</th><th>Email</th><th>Skills</th><th>Active</th></tr>${agents.map((a) => `<tr data-id="${a.id}"><td>${esc(a.name)}</td><td>${esc(a.email)}</td>
+    <td>${meta.categories.map((c) => `<label style="display:inline-block;margin-right:8px"><input type="checkbox" style="width:auto" data-c="${esc(c)}" ${a.categories.includes(c) ? 'checked' : ''}> ${esc(c)}</label>`).join('')}</td>
+    <td><input type="checkbox" style="width:auto" data-active ${a.active ? 'checked' : ''}></td></tr>`).join('')}</table></div>
+    <div class="card"><h2>Add agent</h2><form id="addAgent" class="row"><div><label>Name</label><input name="name" required></div><div><label>Email</label><input name="email" type="email"></div><div style="align-self:end"><button class="primary">Add</button></div></form></div>`;
+  $('#agents').querySelectorAll('tr[data-id]').forEach((tr) => (tr.onchange = async () => {
+    await api(`/api/admin/agents/${tr.dataset.id}`, { method: 'PATCH', body: { active: tr.querySelector('[data-active]').checked, categories: [...tr.querySelectorAll('[data-c]:checked')].map((c) => c.dataset.c) } });
+  }));
+  $('#addAgent').onsubmit = async (e) => { e.preventDefault(); await api('/api/admin/agents', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); agentsView(); };
+}
+
+async function kbView(editing) {
+  const arts = await api('/api/admin/kb'), cur = arts.find((a) => a.id === editing) || {};
+  $('#kb').innerHTML = `<div class="grid2"><div class="card"><h2>Prerequisite articles</h2><table>${arts.map((a) => `<tr class="click" data-id="${a.id}"><td><b>${esc(a.title)}</b><br><span class="hint">${esc(a.category)}</span></td></tr>`).join('')}</table></div>
+    <div class="card"><h2>${cur.id ? 'Edit article' : 'New article'}</h2><form id="kbForm">
+    <label>Title</label><input name="title" value="${esc(cur.title)}" required><label>Category</label><select name="category">${options(meta.categories, cur.category)}</select>
+    <label>Keywords (words requesters might use; boosts the bot's matching)</label><input name="keywords" value="${esc(cur.keywords)}">
+    <label>Prerequisites (one per line)</label><textarea name="body" style="min-height:180px" required>${esc(cur.body)}</textarea>
+    <p><button class="primary">Save</button> ${cur.id ? '<button type="button" class="sec" id="kdel">Delete</button> <button type="button" class="sec" id="knew">New</button>' : ''}</p></form></div></div>`;
+  $('#kb').querySelectorAll('tr.click').forEach((r) => (r.onclick = () => kbView(Number(r.dataset.id))));
+  $('#kbForm').onsubmit = async (e) => {
+    e.preventDefault(); const body = Object.fromEntries(new FormData(e.target));
+    await api(cur.id ? `/api/admin/kb/${cur.id}` : '/api/admin/kb', { method: cur.id ? 'PUT' : 'POST', body }); kbView();
+  };
+  if (cur.id) {
+    $('#knew').onclick = () => kbView();
+    $('#kdel').onclick = async () => { if (confirm('Delete this article?')) { await api(`/api/admin/kb/${cur.id}`, { method: 'DELETE' }); kbView(); } };
+  }
+}
+
+async function settings() {
+  meta = await api('/api/meta');
+  $('#set').innerHTML = `<div class="card"><h2>SLA targets (hours to resolve)</h2><form id="slaForm" class="row">${meta.priorities.map((p) => `<div><label>${p}</label><input type="number" min="1" name="${p}" value="${meta.sla_hours[p]}"></div>`).join('')}<div style="align-self:end"><button class="primary">Save</button></div></form>
+    <p class="hint">Changes apply to new tickets; changing a ticket's priority recalculates its due date.</p><p id="smsg" class="ok"></p></div>
+    <div class="card"><button class="sec" id="out">Sign out</button></div>`;
+  $('#slaForm').onsubmit = async (e) => { e.preventDefault(); await api('/api/admin/settings', { method: 'PUT', body: { sla_hours: Object.fromEntries(new FormData(e.target)) } }); $('#smsg').textContent = 'Saved'; };
+  $('#out').onclick = async () => { await api('/api/logout', { method: 'POST' }); location.reload(); };
+}
+start();
+</script></body></html>

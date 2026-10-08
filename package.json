@@ -1,0 +1,12 @@
+{
+  "name": "bizops-desk",
+  "version": "0.1.0",
+  "description": "Business Operations request desk: intake, auto-assignment, analytics and a prerequisites bot",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

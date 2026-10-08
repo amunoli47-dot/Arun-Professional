@@ -1,0 +1,76 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Business Operations Desk</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>Business Operations Desk</h1>
+<nav id="nav"><button data-t="bot">Check prerequisites</button><button data-t="new">Raise a request</button><button data-t="track">Track a request</button></nav></header>
+<main>
+<section id="bot" class="card"><h2>Prerequisites assistant</h2>
+<p class="hint">Ask what you need ready before raising a request, e.g. "What do I need for a new product form?"</p>
+<div id="chat" class="chat"><div class="msg bot">Hi! Tell me what you want to request (CRM change, new lead source, form, campaign, integration…) and I'll list the prerequisites.</div></div>
+<form id="chatForm" style="display:flex;gap:8px"><input id="q" placeholder="Type your question…" autocomplete="off" required><button class="primary">Ask</button></form></section>
+
+<section id="new" class="card hidden"><h2>Raise a request</h2>
+<form id="ticketForm"><div class="row">
+<div><label>Your name</label><input name="requester_name" required></div>
+<div><label>Your email</label><input name="requester_email" type="email" required></div>
+<div><label>Your team</label><input name="team" placeholder="e.g. Sales, Marketing"></div></div>
+<div class="row"><div><label>Request type</label><select name="category" id="cat"></select></div>
+<div><label>Priority</label><select name="priority" id="pri"></select></div></div>
+<label>Title</label><input name="title" required>
+<label>Details (include the prerequisites from the assistant)</label><textarea name="description"></textarea>
+<p><button class="primary">Submit request</button> <span id="tmsg"></span></p></form></section>
+
+<section id="track" class="card hidden"><h2>Track a request</h2>
+<form id="trackForm" class="row"><div><label>Ticket code</label><input name="code" placeholder="BOPS-0001" required></div>
+<div><label>Email used on the request</label><input name="email" type="email" required></div>
+<div style="align-self:end"><button class="primary">Look up</button></div></form><div id="trackOut"></div></section>
+</main>
+<script type="module">
+import { $, esc, fmt, api, options, tabs } from '/common.js';
+const show = tabs($('#nav'), [...document.querySelectorAll('main > section')]);
+show('bot');
+const meta = await api('/api/meta');
+$('#cat').innerHTML = options(meta.categories); $('#pri').innerHTML = options(meta.priorities, 'medium');
+
+const chat = $('#chat');
+const add = (cls, html) => { const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html; chat.append(d); chat.scrollTop = chat.scrollHeight; return d; };
+$('#chatForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const message = $('#q').value.trim(); $('#q').value = '';
+  add('me', esc(message));
+  try {
+    const r = await api('/api/bot', { method: 'POST', body: { message } });
+    let html = '';
+    if (r.summary) html += `<div>${esc(r.summary)}</div><hr>`;
+    if (r.answered) {
+      html += r.sources.map((s, i) => `<h4>${esc(s.title)}</h4><div>${esc(s.body)}</div>${i < r.sources.length - 1 ? '<hr>' : ''}`).join('');
+      html += `<p class="hint">Was this helpful? <a href="#" data-f="1">Yes</a> · <a href="#" data-f="0">No</a> · <a href="#" data-go="new">Raise a request</a></p>`;
+    } else html += esc(r.suggest_ticket) + ` <a href="#" data-go="new">Raise a request</a>`;
+    const el = add('bot', html);
+    el.onclick = async (ev) => {
+      ev.preventDefault();
+      if (ev.target.dataset.go) show('new');
+      if (ev.target.dataset.f !== undefined) { await api(`/api/bot/${r.log_id}/feedback`, { method: 'POST', body: { helpful: ev.target.dataset.f === '1' } }); ev.target.parentElement.textContent = 'Thanks for the feedback!'; }
+    };
+  } catch (err) { add('bot', `<span class="err">${esc(err.message)}</span>`); }
+};
+
+$('#ticketForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/api/tickets', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+    $('#tmsg').innerHTML = `<span class="ok">Created <b>${esc(r.code)}</b>${r.agent ? `, assigned to ${esc(r.agent)}` : ''}. Target date: ${esc(fmt(r.due_at))}. Keep the code to track it.</span>`;
+    e.target.reset();
+  } catch (err) { $('#tmsg').innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+};
+
+$('#trackForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  try {
+    const t = await api(`/api/track?code=${encodeURIComponent(f.code)}&email=${encodeURIComponent(f.email)}`);
+    $('#trackOut').innerHTML = `<h2>${esc(t.code)} · ${esc(t.title)}</h2><p><span class="pill">${esc(t.status.replace('_', ' '))}</span> <span class="pill">${esc(t.category)}</span> Assigned to: ${esc(t.agent || 'unassigned')}<br>Raised ${esc(fmt(t.created_at))} · Target ${esc(fmt(t.due_at))}${t.resolved_at ? ` · Resolved ${esc(fmt(t.resolved_at))}` : ''}</p>
+      ${t.resolution_note ? `<p><b>Resolution:</b> ${esc(t.resolution_note)}</p>` : ''}
+      ${t.comments.map((c) => `<div class="cm"><b>${esc(c.author)}</b> <span class="hint">${esc(fmt(c.created_at))}</span><br>${esc(c.body)}</div>`).join('')}`;
+  } catch (err) { $('#trackOut').innerHTML = `<p class="err">${esc(err.message)}</p>`; }
+};
+</script></body></html>
